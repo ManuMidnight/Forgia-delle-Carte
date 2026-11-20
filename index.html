@@ -1073,19 +1073,36 @@ function renderBlob(card,f){
     return new Promise(function(res){c.toBlob(function(b){res({blob:b,url:c.toDataURL('image/png')});},'image/png');});
   });
 }
+/* ---------- Salvataggio file: capability del viewer, oppure download diretto se la pagina è aperta da sola ---------- */
+function getDl(){
+  try{return (window.claude&&typeof window.claude.use==='function')?Promise.resolve(window.claude.use('downloads')).catch(function(){return null;}):Promise.resolve(null);}
+  catch(e){return Promise.resolve(null);}
+}
+function isTopLevel(){try{return window.self===window.top;}catch(e){return false;}}
+function anchorSave(name,data,mime){
+  var blob=(data instanceof Blob)?data:new Blob([data],{type:mime});
+  var u=URL.createObjectURL(blob),a=document.createElement('a');
+  a.href=u;a.download=name;a.rel='noopener';document.body.appendChild(a);a.click();a.remove();
+  setTimeout(function(){URL.revokeObjectURL(u);},60000);
+}
+/* risolve {how:'dl'|'anchor'|'declined'|'error'|'none',code} */
+function saveFile(name,data,mime){
+  return getDl().then(function(dl){
+    if(dl)return dl.save({filename:name,data:data}).then(function(){return {how:'dl'};}).catch(function(e){return {how:(e&&e.code==='declined')?'declined':'error',code:e&&e.code};});
+    if(isTopLevel()){try{anchorSave(name,data,mime);return {how:'anchor'};}catch(e){return {how:'error'};}}
+    return {how:'none'};
+  });
+}
+function savedMsg(r,what,name){return r.how==='anchor'?'Download avviato: cerca '+name+' nei Download.':what+' salvato.';}
+
 function exportPng(){
   setStatus('Preparo l\'immagine…');
   var nm=face==='back'?'dorso-carta.png':slug(face==='myst'?(UNK[cur.type]||'sconosciuto'):cur.name)+(face==='myst'?'-sconosciuta':'')+'.png';
   fontsReady.then(function(){return renderBlob(cur,face);}).then(function(r){
-    var p=(window.claude&&typeof window.claude.use==='function')?window.claude.use('downloads'):Promise.resolve(null);
-    return Promise.resolve(p).catch(function(){return null;}).then(function(dl){
-      if(dl){
-        return dl.save({filename:nm,data:r.blob}).then(function(){setStatus('Immagine salvata.');}).catch(function(err){
-          if(err&&err.code==='declined'){setStatus('Salvataggio annullato.');return;}
-          showOverlay(r.url);
-        });
-      }
-      showOverlay(r.url);
+    return saveFile(nm,r.blob,'image/png').then(function(res){
+      if(res.how==='dl'||res.how==='anchor')setStatus(res.how==='anchor'?savedMsg(res,'','"'+nm+'"'):'Immagine salvata.');
+      else if(res.how==='declined')setStatus('Salvataggio annullato.');
+      else showOverlay(r.url);
     });
   }).catch(function(){setStatus('Non sono riuscito a creare l\'immagine.');});
 }
@@ -1254,14 +1271,12 @@ function exportSheetPdf(){
   st.textContent='Preparo il PDF…';
   fontsReady.then(function(){return next(0);}).then(function(){
     var blob=new Blob([buildPdf(jp,P.w/25.4*72,P.h/25.4*72,wPx,hPx)],{type:'application/pdf'});
-    var p=(window.claude&&typeof window.claude.use==='function')?window.claude.use('downloads'):Promise.resolve(null);
-    return Promise.resolve(p).catch(function(){return null;}).then(function(dl){
-      if(!dl){
-        return renderSheet(slots,0,100).then(function(c){showOverlay(c.toDataURL('image/png'));st.textContent='Il download di file non è disponibile in questa vista: salva l\'immagine della prima pagina oppure apri la pagina nel browser di Claude.';});
-      }
-      return dl.save({filename:'carte-dnd-'+P.name.toLowerCase()+'.pdf',data:blob}).then(function(){st.textContent='PDF salvato.';}).catch(function(e){
-        st.textContent=(e&&e.code==='declined')?'Salvataggio annullato.':'Salvataggio non riuscito.';
-      });
+    var fn='carte-dnd-'+P.name.toLowerCase()+'.pdf';
+    return saveFile(fn,blob,'application/pdf').then(function(res){
+      if(res.how==='dl')st.textContent='PDF salvato.';
+      else if(res.how==='anchor')st.textContent=savedMsg(res,'','"'+fn+'"');
+      else if(res.how==='declined')st.textContent='Salvataggio annullato.';
+      else return renderSheet(slots,0,100).then(function(c){showOverlay(c.toDataURL('image/png'));st.textContent='Qui il salvataggio di file non è disponibile: ti mostro la prima pagina come immagine. Per il PDF completo apri la pagina dall\'app o dal sito di Claude.';});
     });
   }).catch(function(){st.textContent='Non sono riuscito a creare il PDF.';});
 }
@@ -1281,14 +1296,11 @@ function openBackupPanel(why){
 }
 function exportDeck(){
   if(!cards.length){alert0('Il mazzo è vuoto.');return;}
-  var p;
-  try{p=(window.claude&&typeof window.claude.use==='function')?window.claude.use('downloads'):null;}catch(e){p=null;}
-  Promise.resolve(p).catch(function(){return null;}).then(function(dl){
-    if(!dl){openBackupPanel('Qui il salvataggio di file non è disponibile. Copia il testo del backup qui sotto e conservalo: per ripristinarlo lo incolli e premi «Importa dal testo».');return;}
-    return dl.save({filename:'mazzo-carte-dnd.json',data:deckJson()}).then(function(){alert0('Backup salvato.');}).catch(function(e){
-      if(e&&e.code==='declined'){alert0('Salvataggio annullato.');return;}
-      openBackupPanel('Il salvataggio del file non è riuscito'+(e&&e.code?' ('+e.code+')':'')+'. Copia il testo del backup qui sotto.');
-    });
+  saveFile('mazzo-carte-dnd.json',deckJson(),'application/json').then(function(r){
+    if(r.how==='dl')alert0('Backup salvato.');
+    else if(r.how==='anchor')alert0(savedMsg(r,'Backup','"mazzo-carte-dnd.json"'));
+    else if(r.how==='declined')alert0('Salvataggio annullato.');
+    else openBackupPanel('Il salvataggio del file non è disponibile qui'+(r.code?' ('+r.code+')':'')+'. Copia il testo del backup qui sotto, oppure apri la pagina dall\'app o dal sito di Claude per salvare il file.');
   });
 }
 function alert0(t){$('deck-note').textContent=t;}
